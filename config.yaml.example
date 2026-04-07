@@ -1,0 +1,28 @@
+# vrestic configuration example
+# Passwords are stored in Vault at kv/rbackup/<snapshot-name>
+# Repositories are auto-initialized on first backup
+
+snapshots:
+  documents:
+    repo: s3:https://minio.example.com/backups/documents
+    path: /data/documents
+    exclude: "*.tmp"
+    cacheDir: /tmp/restic-cache
+    # retention: how long to keep snapshots (default: 1m)
+    # Uses restic duration format: 1y2m3d (years, months, days)
+    retention: "1m"
+    # limitUpload: max upload speed in KiB/s (0 = unlimited)
+    limitUpload: 5120  # 5 MiB/s
+
+  photos:
+    repo: /mnt/backup-drive/photos
+    path: /data/photos
+    retention: "6m"
+    limitUpload: 2048  # 2 MiB/s
+
+  # Use localRepo for local-only backups (with --local flag)
+  database:
+    repo: s3:https://minio.example.com/backups/database
+    localRepo: /mnt/local-backup/database
+    path: /data/database
+    retention: "3m"
