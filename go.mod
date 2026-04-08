@@ -1,6 +1,6 @@
 module github.com/thorix/vrestic
 
-go 1.23.0
+go 1.26
 
 require (
 	github.com/hashicorp/vault-client-go v0.4.3
