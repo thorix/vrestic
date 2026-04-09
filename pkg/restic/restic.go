@@ -51,8 +51,10 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 	if len(snap.Exclude) != 0 {
 		args = append(args, "--exclude", snap.Exclude)
 	}
-	if snap.LimitUpload > 0 {
+	if snap.LimitUpload > 0 && isRemoteRepo(repoPath) {
 		args = append(args, "--limit-upload", strconv.Itoa(snap.LimitUpload))
+	} else if snap.LimitUpload > 0 {
+		slog.Info("Skipping limitUpload for local repo", "snapshot", snapshotName, "repo", repoPath)
 	}
 
 	slog.Info("Running backup", "snapshot", snapshotName)
@@ -205,6 +207,17 @@ func PseudoName() (string, error) {
 		return "", fmt.Errorf("generating name: %w", err)
 	}
 	return fmt.Sprintf("%X", b[0:8]), nil
+}
+
+// isRemoteRepo returns true if the repo path uses a remote backend (sftp, s3, etc.)
+func isRemoteRepo(repo string) bool {
+	prefixes := []string{"sftp:", "s3:", "rest:", "b2:", "gs:", "azure:", "swift:", "rclone:"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(repo, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func isDirEmpty(dirname string) (bool, error) {
