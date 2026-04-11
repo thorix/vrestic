@@ -11,7 +11,7 @@ on:
         required: true
 
 env:
-  REGISTRY: hr729104.thorix.org
+  REGISTRY: harbor.thorix.io
   IMAGE_NAME: library/vrestic
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
 
   build-and-push:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: arc-runners
     permissions:
       contents: read
     steps:
