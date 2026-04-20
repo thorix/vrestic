@@ -128,6 +128,23 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		return err
 	}
 
+	// Clear any stale locks left behind by prior OOMKilled / interrupted runs
+	// before attempting the retention step. `restic unlock` without flags only
+	// removes locks older than 30 minutes (so an in-flight backup on another
+	// host won't be disturbed).
+	slog.Debug("Removing stale locks if any", "repo", repoPath)
+	unlockArgs := []string{"-r", repoPath, "unlock"}
+	if len(snap.CacheDir) != 0 {
+		unlockArgs = append(unlockArgs, "--cache-dir", snap.CacheDir)
+	}
+	if err := shell.Run(shell.Command{
+		Binary: "restic",
+		Args:   unlockArgs,
+		Envs:   env,
+	}); err != nil {
+		slog.Warn("restic unlock failed (continuing)", "snapshot", snapshotName, "error", err)
+	}
+
 	// Apply retention policy
 	retention := snap.Retention
 	if retention == "" {
@@ -144,6 +161,50 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 	return shell.Run(shell.Command{
 		Binary: "restic",
 		Args:   forgetArgs,
+		Envs:   env,
+	})
+}
+
+// Unlock removes stale locks from a snapshot's repo. `removeAll` maps to
+// `restic unlock --remove-all`, which also clears non-stale locks — use
+// only when you're sure no backup is in progress elsewhere.
+func (r *Runner) Unlock(snapshotName string, snap *config.Snapshot, removeAll bool) error {
+	repoPath := snap.Repo
+	if r.UseLocal {
+		repoPath = snap.LocalRepo
+	}
+	if len(repoPath) == 0 {
+		return errors.New("snapshot repo is missing")
+	}
+
+	if r.DryRun {
+		action := "unlock"
+		if removeAll {
+			action = "unlock --remove-all"
+		}
+		slog.Info("Dry run", "command", fmt.Sprintf("restic -r %s %s", repoPath, action))
+		return nil
+	}
+
+	passwordValue, err := r.getPassword(snapshotName)
+	if err != nil {
+		return err
+	}
+
+	env := os.Environ()
+	env = append(env, "RESTIC_PASSWORD="+passwordValue)
+
+	args := []string{"-r", repoPath, "unlock"}
+	if removeAll {
+		args = append(args, "--remove-all")
+	}
+	if len(snap.CacheDir) != 0 {
+		args = append(args, "--cache-dir", snap.CacheDir)
+	}
+	slog.Info("Unlocking repository", "snapshot", snapshotName, "remove-all", removeAll)
+	return shell.Run(shell.Command{
+		Binary: "restic",
+		Args:   args,
 		Envs:   env,
 	})
 }

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,6 +23,8 @@ var opts struct {
 	listSnapshots bool
 	runAll        bool
 	generateName  bool
+	unlock        bool
+	unlockRemove  bool
 	runSnapshot   string
 	configFile    string
 }
@@ -76,6 +79,31 @@ Repositories are automatically initialized on first backup.`,
 			Vault:    v,
 		}
 
+		if opts.unlock {
+			if opts.runSnapshot != "" {
+				snap, ok := cfg.Snapshots[opts.runSnapshot]
+				if !ok {
+					return fmt.Errorf("snapshot %q not found in config", opts.runSnapshot)
+				}
+				return runner.Unlock(opts.runSnapshot, snap, opts.unlockRemove)
+			}
+			if opts.runAll {
+				slog.Info("Unlocking all repositories")
+				var errs []error
+				for name, snap := range cfg.Snapshots {
+					if err := runner.Unlock(name, snap, opts.unlockRemove); err != nil {
+						slog.Error("Unlock failed", "snapshot", name, "error", err)
+						errs = append(errs, fmt.Errorf("%s: %w", name, err))
+					}
+				}
+				if len(errs) > 0 {
+					return fmt.Errorf("%d unlock(s) failed", len(errs))
+				}
+				return nil
+			}
+			return errors.New("--unlock requires either --backup <name> or --all")
+		}
+
 		if opts.runSnapshot != "" {
 			snap, ok := cfg.Snapshots[opts.runSnapshot]
 			if !ok {
@@ -113,6 +141,8 @@ func init() {
 	rootCmd.Flags().BoolVarP(&opts.generateName, "generate", "g", false, "Generate a random repo name")
 	rootCmd.Flags().StringVarP(&opts.runSnapshot, "backup", "b", "", "Run backup for given snapshot name")
 	rootCmd.Flags().StringVar(&opts.configFile, "in", "config.yaml", "Configuration file")
+	rootCmd.Flags().BoolVar(&opts.unlock, "unlock", false, "Unlock repo(s) instead of running a backup (requires --backup or --all)")
+	rootCmd.Flags().BoolVar(&opts.unlockRemove, "unlock-remove-all", false, "When used with --unlock, remove ALL locks including active ones (dangerous)")
 }
 
 func displayList(cfg *config.Config) {
