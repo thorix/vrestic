@@ -2,6 +2,7 @@ package restic
 
 import (
 	crypto "crypto/rand"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,8 +10,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thorix/vrestic/pkg/config"
+	"github.com/thorix/vrestic/pkg/metrics"
 	"github.com/thorix/vrestic/pkg/shell"
 	"github.com/thorix/vrestic/pkg/vault"
 )
@@ -21,23 +24,55 @@ type Runner struct {
 	Verbose  bool
 	UseLocal bool
 	Vault    vault.Vault
+	Defaults config.Defaults
+	Metrics  *metrics.Pusher
+	Timeout  time.Duration
+	ctx      context.Context // set by RunTimed when timeout is configured
+}
+
+// RunTimed wraps Run with timing, timeout, and metrics push.
+func (r *Runner) RunTimed(snapshotName string, snap *config.Snapshot) error {
+	start := time.Now()
+
+	if r.Timeout > 0 {
+		var cancel context.CancelFunc
+		r.ctx, cancel = context.WithTimeout(context.Background(), r.Timeout)
+		defer func() {
+			cancel()
+			r.ctx = nil
+		}()
+	}
+
+	err := r.Run(snapshotName, snap)
+	duration := time.Since(start)
+
+	if r.Metrics != nil {
+		r.Metrics.Push(metrics.Result{
+			Snapshot: snapshotName,
+			Success:  err == nil,
+			Duration: duration,
+			Error:    err,
+		})
+	}
+
+	if err != nil {
+		slog.Error("Backup failed", "snapshot", snapshotName, "duration", duration.Round(time.Second), "error", err)
+	} else {
+		slog.Info("Backup completed", "snapshot", snapshotName, "duration", duration.Round(time.Second))
+	}
+
+	return err
 }
 
 // Run performs a full backup for the named snapshot
 func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
-	if r.UseLocal && len(snap.LocalRepo) == 0 {
-		return errors.New("snapshot localRepo is missing")
-	}
-	if len(snap.Repo) == 0 {
-		return errors.New("snapshot repo is missing")
-	}
 	if len(snap.Path) == 0 {
 		return errors.New("snapshot path is missing")
 	}
 
-	repoPath := snap.Repo
-	if r.UseLocal {
-		repoPath = snap.LocalRepo
+	repoPath := snap.ResolvedRepo(r.Defaults, r.UseLocal)
+	if len(repoPath) == 0 {
+		return errors.New("snapshot repo is missing (set repoName or repo/localRepo)")
 	}
 
 	args := []string{"-r", repoPath, "backup"}
@@ -51,9 +86,13 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 	if len(snap.Exclude) != 0 {
 		args = append(args, "--exclude", snap.Exclude)
 	}
-	if snap.LimitUpload > 0 && isRemoteRepo(repoPath) {
-		args = append(args, "--limit-upload", strconv.Itoa(snap.LimitUpload))
-	} else if snap.LimitUpload > 0 {
+	limitUpload := snap.LimitUpload
+	if limitUpload == 0 {
+		limitUpload = r.Defaults.LimitUpload
+	}
+	if limitUpload > 0 && isRemoteRepo(repoPath) {
+		args = append(args, "--limit-upload", strconv.Itoa(limitUpload))
+	} else if limitUpload > 0 {
 		slog.Info("Skipping limitUpload for local repo", "snapshot", snapshotName, "repo", repoPath)
 	}
 
@@ -77,44 +116,24 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 
 	passwordValue, err := r.getPassword(snapshotName)
 	if err != nil {
-		if strings.HasPrefix(err.Error(), "404") {
-			slog.Info("Creating missing password for snapshot", "snapshot", snapshotName)
-			err = r.Vault.WritePassword(snapshotName, CreatePassword())
-			if err != nil {
-				return err
-			}
-			passwordValue, err = r.getPassword(snapshotName)
-			if err != nil {
-				return err
-			}
-		} else {
-			return err
-		}
+		return fmt.Errorf("reading password for %s: %w (use --new to create new snapshots)", snapshotName, err)
 	}
 	if len(passwordValue) == 0 {
-		return errors.New("password missing from Vault")
+		return fmt.Errorf("password is empty for %s (use --new to create new snapshots)", snapshotName)
 	}
 
 	env := os.Environ()
 	env = append(env, "RESTIC_PASSWORD="+passwordValue)
 
-	// Test if repo exists, init if needed
-	slog.Debug("Testing restic repo", "path", repoPath)
+	// Verify repo exists (repos are created via --new, not auto-initialized)
+	slog.Debug("Verifying restic repo", "path", repoPath)
 	err = shell.Run(shell.Command{
 		Binary: "restic",
 		Args:   []string{"-r", repoPath, "snapshots"},
 		Envs:   env,
 	})
 	if err != nil {
-		slog.Info("Creating repository", "path", repoPath)
-		err = shell.Run(shell.Command{
-			Binary: "restic",
-			Args:   []string{"-r", repoPath, "init"},
-			Envs:   env,
-		})
-		if err != nil {
-			return err
-		}
+		return fmt.Errorf("repo %s does not exist or is inaccessible (use --new to create new snapshots): %w", repoPath, err)
 	}
 
 	// Run the backup
@@ -123,6 +142,7 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		Binary: "restic",
 		Args:   args,
 		Envs:   env,
+		Ctx:    r.ctx,
 	})
 	if err != nil {
 		return err
@@ -148,6 +168,9 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 	// Apply retention policy
 	retention := snap.Retention
 	if retention == "" {
+		retention = r.Defaults.Retention
+	}
+	if retention == "" {
 		retention = "1m"
 	}
 	slog.Info("Applying retention policy", "keep-within", retention)
@@ -162,6 +185,7 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		Binary: "restic",
 		Args:   forgetArgs,
 		Envs:   env,
+		Ctx:    r.ctx,
 	})
 }
 
@@ -169,12 +193,9 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 // `restic unlock --remove-all`, which also clears non-stale locks — use
 // only when you're sure no backup is in progress elsewhere.
 func (r *Runner) Unlock(snapshotName string, snap *config.Snapshot, removeAll bool) error {
-	repoPath := snap.Repo
-	if r.UseLocal {
-		repoPath = snap.LocalRepo
-	}
+	repoPath := snap.ResolvedRepo(r.Defaults, r.UseLocal)
 	if len(repoPath) == 0 {
-		return errors.New("snapshot repo is missing")
+		return errors.New("snapshot repo is missing (set repoName or repo/localRepo)")
 	}
 
 	if r.DryRun {
@@ -211,12 +232,9 @@ func (r *Runner) Unlock(snapshotName string, snap *config.Snapshot, removeAll bo
 
 // ListSnapshots runs restic snapshots for a given snapshot config
 func (r *Runner) ListSnapshots(snapshotName string, snap *config.Snapshot) error {
-	repoPath := snap.Repo
-	if r.UseLocal {
-		repoPath = snap.LocalRepo
-	}
+	repoPath := snap.ResolvedRepo(r.Defaults, r.UseLocal)
 	if len(repoPath) == 0 {
-		return errors.New("snapshot repo is missing")
+		return errors.New("snapshot repo is missing (set repoName or repo/localRepo)")
 	}
 
 	if r.DryRun {
