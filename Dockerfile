@@ -1,5 +1,5 @@
 ARG CACHE_REGISTRY=""
-FROM ${CACHE_REGISTRY}golang:1.26-alpine AS builder
+FROM ${CACHE_REGISTRY}golang:1.26.2-alpine AS builder
 
 WORKDIR /src
 COPY go.mod go.sum ./
