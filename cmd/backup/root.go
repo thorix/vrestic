@@ -465,7 +465,8 @@ func runInit(name string, cfg *config.Config, v *vault.Vault, locName string, lo
 
 	// Check if repo already exists
 	if info, err := os.Stat(repoPath); err == nil && info.IsDir() {
-		return fmt.Errorf("repo path %q already exists", repoPath)
+		slog.Info("Repo already exists, skipping", "snapshot", name, "path", repoPath)
+		return nil
 	}
 
 	// Read existing password from Vault
