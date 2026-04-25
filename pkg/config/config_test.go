@@ -79,3 +79,130 @@ snapshots:
 	assert.Equal(t, "1m", paperless.Retention)
 	assert.Equal(t, 1024, paperless.LimitUpload)
 }
+
+func TestResolvedRepo(t *testing.T) {
+	loc := &Location{RepoBase: "/mnt/backup/"}
+	snap := &Snapshot{RepoName: "FAC35D351AFBAE75"}
+	assert.Equal(t, "/mnt/backup/FAC35D351AFBAE75", snap.ResolvedRepo(loc))
+}
+
+func TestResolvedRepo_EmptyRepoName(t *testing.T) {
+	loc := &Location{RepoBase: "/mnt/backup/"}
+	snap := &Snapshot{}
+	assert.Equal(t, "", snap.ResolvedRepo(loc))
+}
+
+func TestResolvedRepo_NilLocation(t *testing.T) {
+	snap := &Snapshot{RepoName: "FAC35D351AFBAE75"}
+	assert.Equal(t, "", snap.ResolvedRepo(nil))
+}
+
+func TestResolvedLimitUpload(t *testing.T) {
+	tests := []struct {
+		name     string
+		snap     *Snapshot
+		loc      *Location
+		expected int
+	}{
+		{
+			name:     "snapshot overrides location",
+			snap:     &Snapshot{LimitUpload: 512},
+			loc:      &Location{LimitUpload: 2048},
+			expected: 512,
+		},
+		{
+			name:     "falls back to location",
+			snap:     &Snapshot{},
+			loc:      &Location{LimitUpload: 2048},
+			expected: 2048,
+		},
+		{
+			name:     "zero when neither set",
+			snap:     &Snapshot{},
+			loc:      &Location{},
+			expected: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.snap.ResolvedLimitUpload(tt.loc))
+		})
+	}
+}
+
+func TestResolvedCacheDir(t *testing.T) {
+	tests := []struct {
+		name     string
+		snap     *Snapshot
+		loc      *Location
+		expected string
+	}{
+		{
+			name:     "snapshot overrides location",
+			snap:     &Snapshot{CacheDir: "/snap-cache"},
+			loc:      &Location{CacheDir: "/loc-cache"},
+			expected: "/snap-cache",
+		},
+		{
+			name:     "falls back to location",
+			snap:     &Snapshot{},
+			loc:      &Location{CacheDir: "/loc-cache"},
+			expected: "/loc-cache",
+		},
+		{
+			name:     "empty when neither set",
+			snap:     &Snapshot{},
+			loc:      &Location{},
+			expected: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.snap.ResolvedCacheDir(tt.loc))
+		})
+	}
+}
+
+func TestResolvedRetention(t *testing.T) {
+	tests := []struct {
+		name     string
+		snap     *Snapshot
+		loc      *Location
+		defaults Defaults
+		expected string
+	}{
+		{
+			name:     "snapshot overrides all",
+			snap:     &Snapshot{Retention: "1m"},
+			loc:      &Location{Retention: "3m"},
+			defaults: Defaults{Retention: "6m"},
+			expected: "1m",
+		},
+		{
+			name:     "location overrides global",
+			snap:     &Snapshot{},
+			loc:      &Location{Retention: "3m"},
+			defaults: Defaults{Retention: "6m"},
+			expected: "3m",
+		},
+		{
+			name:     "falls back to global",
+			snap:     &Snapshot{},
+			loc:      &Location{},
+			defaults: Defaults{Retention: "6m"},
+			expected: "6m",
+		},
+		{
+			name:     "empty when nothing set",
+			snap:     &Snapshot{},
+			loc:      &Location{},
+			defaults: Defaults{},
+			expected: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.snap.ResolvedRetention(tt.loc, tt.defaults))
+		})
+	}
+}

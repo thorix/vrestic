@@ -49,6 +49,42 @@ func (s *Snapshot) ResolvedRepo(loc *Location) string {
 	return ""
 }
 
+// ResolvedLimitUpload returns the effective upload limit.
+// Resolution: snapshot -> location.
+func (s *Snapshot) ResolvedLimitUpload(loc *Location) int {
+	if s.LimitUpload > 0 {
+		return s.LimitUpload
+	}
+	if loc != nil {
+		return loc.LimitUpload
+	}
+	return 0
+}
+
+// ResolvedCacheDir returns the effective cache directory.
+// Resolution: snapshot -> location.
+func (s *Snapshot) ResolvedCacheDir(loc *Location) string {
+	if s.CacheDir != "" {
+		return s.CacheDir
+	}
+	if loc != nil {
+		return loc.CacheDir
+	}
+	return ""
+}
+
+// ResolvedRetention returns the effective retention period.
+// Resolution: snapshot -> location -> global default.
+func (s *Snapshot) ResolvedRetention(loc *Location, defaults Defaults) string {
+	if s.Retention != "" {
+		return s.Retention
+	}
+	if loc != nil && loc.Retention != "" {
+		return loc.Retention
+	}
+	return defaults.Retention
+}
+
 // StringList is a []string that unmarshals from either a single string or a list
 type StringList []string
 
