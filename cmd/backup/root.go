@@ -21,20 +21,21 @@ import (
 )
 
 var opts struct {
-	debug         bool
-	dryRun        bool
-	quiet         bool
-	location      string
-	listSnapshots bool
-	runAll        bool
-	generateName  bool
-	unlock        bool
-	unlockRemove  bool
-	syncConfig    bool
-	newSnapshot   string
-	runSnapshot   string
-	configFile    string
-	initSnapshot  string
+	debug          bool
+	dryRun         bool
+	quiet          bool
+	location       string
+	listSnapshots  bool
+	runAll         bool
+	generateName   bool
+	unlock         bool
+	unlockRemove   bool
+	syncConfig     bool
+	newSnapshot    string
+	runSnapshot    string
+	configFile     string
+	initSnapshot   string
+	statusSnapshot string
 }
 
 var rootCmd = &cobra.Command{
@@ -71,6 +72,55 @@ Repositories are automatically initialized on first backup.`,
 		// List doesn't need Vault
 		if opts.listSnapshots {
 			displayList(cfg)
+			return nil
+		}
+
+		// Status check
+		if opts.statusSnapshot != "" {
+			locName, loc, err := resolveLocation(cfg, opts.location)
+			if err != nil {
+				return err
+			}
+
+			var v vault.Vault
+			if err := v.New(); err != nil {
+				return err
+			}
+			if err := v.Connect(); err != nil {
+				return err
+			}
+
+			runner := &restic.Runner{
+				Verbose:      !opts.quiet,
+				Location:     loc,
+				LocationName: locName,
+				Vault:        v,
+				Defaults:     cfg.Defaults,
+			}
+
+			var names []string
+			if opts.statusSnapshot == "all" {
+				for name := range cfg.Snapshots {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+			} else {
+				names = splitSnapshots(opts.statusSnapshot)
+			}
+
+			for _, name := range names {
+				if _, ok := cfg.Snapshots[name]; !ok {
+					return fmt.Errorf("snapshot %q not found in config", name)
+				}
+			}
+
+			var results []restic.StatusResult
+			for _, name := range names {
+				snap := cfg.Snapshots[name]
+				results = append(results, runner.Status(name, snap))
+			}
+
+			displayStatus(results, !opts.quiet)
 			return nil
 		}
 
@@ -224,6 +274,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&opts.unlockRemove, "unlock-remove-all", false, "When used with --unlock, remove ALL locks including active ones (dangerous)")
 	rootCmd.Flags().StringVar(&opts.newSnapshot, "new", "", "Create a new backup snapshot interactively")
 	rootCmd.Flags().StringVar(&opts.initSnapshot, "init", "", "Initialize restic repo for an existing snapshot on a location")
+	rootCmd.Flags().StringVar(&opts.statusSnapshot, "status", "", "Show backup status for snapshot(s) (name, comma-list, or \"all\")")
 	rootCmd.Flags().BoolVar(&opts.syncConfig, "sync-config", false, "Pull config from Vault and write to local config file")
 }
 
@@ -280,6 +331,45 @@ func displayList(cfg *config.Config) {
 		s := cfg.Snapshots[name]
 		repo := s.ResolvedRepo(loc)
 		fmt.Fprintf(w, "%s\t%s\t%s\n", name, strings.Join(s.Path, ", "), repo)
+	}
+	w.Flush()
+}
+
+func displayStatus(results []restic.StatusResult, verbose bool) {
+	w := tabwriter.NewWriter(os.Stdout, 10, 8, 2, ' ', 0)
+	if verbose {
+		fmt.Fprintln(w, "SNAPSHOT\tLOCATION\tLAST BACKUP\tSNAPSHOTS\tSIZE\tSOURCE")
+	} else {
+		fmt.Fprintln(w, "SNAPSHOT\tLOCATION\tLAST BACKUP\tSNAPSHOTS\tSOURCE")
+	}
+
+	for _, r := range results {
+		lastBackup := "never"
+		snapCount := "0"
+		size := "-"
+
+		switch r.RepoState {
+		case "not initialized":
+			lastBackup = "not initialized"
+			snapCount = "-"
+		case "unreachable":
+			lastBackup = "unreachable"
+			snapCount = "-"
+		default:
+			if !r.LastBackup.IsZero() {
+				lastBackup = r.LastBackup.Local().Format("2006-01-02 15:04:05")
+			}
+			snapCount = fmt.Sprintf("%d", r.SnapshotCount)
+			if r.TotalSize >= 0 {
+				size = restic.FormatSize(r.TotalSize)
+			}
+		}
+
+		if verbose {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Snapshot, r.Location, lastBackup, snapCount, size, r.Source)
+		} else {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Snapshot, r.Location, lastBackup, snapCount, r.Source)
+		}
 	}
 	w.Flush()
 }
