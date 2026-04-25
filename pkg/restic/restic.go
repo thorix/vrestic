@@ -3,6 +3,7 @@ package restic
 import (
 	crypto "crypto/rand"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -304,4 +305,96 @@ func isDirEmpty(dirname string) (bool, error) {
 		return false, err
 	}
 	return len(entries) == 0, nil
+}
+
+// StatusResult holds the status of a single snapshot on a location
+type StatusResult struct {
+	Snapshot      string
+	Location      string
+	LastBackup    time.Time // zero value = never
+	SnapshotCount int
+	TotalSize     int64  // bytes, -1 = unknown
+	Source        string // "ok", "empty", "NOT MOUNTED"
+	RepoState     string // "ok", "not initialized", "unreachable"
+}
+
+// resticSnapshot is the JSON structure returned by restic snapshots --json
+type resticSnapshot struct {
+	Time string `json:"time"`
+}
+
+// resticStats is the JSON structure returned by restic stats --json
+type resticStats struct {
+	TotalSize int64 `json:"total_size"`
+}
+
+func parseSnapshotsJSON(data []byte) (count int, latest time.Time, err error) {
+	var snapshots []resticSnapshot
+	if err := json.Unmarshal(data, &snapshots); err != nil {
+		return 0, time.Time{}, fmt.Errorf("parsing snapshots JSON: %w", err)
+	}
+	if len(snapshots) == 0 {
+		return 0, time.Time{}, nil
+	}
+	for _, s := range snapshots {
+		t, err := time.Parse(time.RFC3339Nano, s.Time)
+		if err != nil {
+			continue
+		}
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	return len(snapshots), latest, nil
+}
+
+func parseStatsJSON(data []byte) (int64, error) {
+	var stats resticStats
+	if err := json.Unmarshal(data, &stats); err != nil {
+		return 0, fmt.Errorf("parsing stats JSON: %w", err)
+	}
+	return stats.TotalSize, nil
+}
+
+// FormatSize formats bytes into a human-readable string.
+func FormatSize(bytes int64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	size := float64(bytes)
+	for _, unit := range units {
+		size /= 1024
+		if size < 1024 || unit == "TiB" {
+			return fmt.Sprintf("%.1f %s", size, unit)
+		}
+	}
+	return fmt.Sprintf("%.1f TiB", size)
+}
+
+// checkSource checks if source paths are accessible and non-empty.
+// Returns "NOT MOUNTED" if any path is inaccessible, "empty" if all paths exist
+// but contain no entries, or "ok" if all paths exist and have content.
+func checkSource(paths []string) string {
+	allEmpty := true
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			return "NOT MOUNTED"
+		}
+		if !info.IsDir() {
+			return "NOT MOUNTED"
+		}
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			return "NOT MOUNTED"
+		}
+		if len(entries) > 0 {
+			allEmpty = false
+		}
+	}
+	if allEmpty {
+		return "empty"
+	}
+	return "ok"
 }
