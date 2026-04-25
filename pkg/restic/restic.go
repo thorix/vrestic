@@ -20,14 +20,15 @@ import (
 
 // Runner orchestrates restic backup operations
 type Runner struct {
-	DryRun   bool
-	Verbose  bool
-	UseLocal bool
-	Vault    vault.Vault
-	Defaults config.Defaults
-	Metrics  *metrics.Pusher
-	Timeout  time.Duration
-	ctx      context.Context // set by RunTimed when timeout is configured
+	DryRun       bool
+	Verbose      bool
+	Location     *config.Location
+	LocationName string
+	Vault        vault.Vault
+	Defaults     config.Defaults
+	Metrics      *metrics.Pusher
+	Timeout      time.Duration
+	ctx          context.Context // set by RunTimed when timeout is configured
 }
 
 // RunTimed wraps Run with timing, timeout, and metrics push.
@@ -49,6 +50,7 @@ func (r *Runner) RunTimed(snapshotName string, snap *config.Snapshot) error {
 	if r.Metrics != nil {
 		r.Metrics.Push(metrics.Result{
 			Snapshot: snapshotName,
+			Location: r.LocationName,
 			Success:  err == nil,
 			Duration: duration,
 			Error:    err,
@@ -70,26 +72,25 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		return errors.New("snapshot path is missing")
 	}
 
-	repoPath := snap.ResolvedRepo(r.Defaults, r.UseLocal)
+	repoPath := snap.ResolvedRepo(r.Location)
 	if len(repoPath) == 0 {
-		return errors.New("snapshot repo is missing (set repoName or repo/localRepo)")
+		return errors.New("snapshot repo is missing (set repoName and location repoBase)")
 	}
+
+	cacheDir := snap.ResolvedCacheDir(r.Location)
 
 	args := []string{"-r", repoPath, "backup"}
 	args = append(args, snap.Path...)
 	if r.Verbose {
 		args = append(args, "--verbose")
 	}
-	if len(snap.CacheDir) != 0 {
-		args = append(args, "--cache-dir", snap.CacheDir)
+	if cacheDir != "" {
+		args = append(args, "--cache-dir", cacheDir)
 	}
 	if len(snap.Exclude) != 0 {
 		args = append(args, "--exclude", snap.Exclude)
 	}
-	limitUpload := snap.LimitUpload
-	if limitUpload == 0 {
-		limitUpload = r.Defaults.LimitUpload
-	}
+	limitUpload := snap.ResolvedLimitUpload(r.Location)
 	if limitUpload > 0 && isRemoteRepo(repoPath) {
 		args = append(args, "--limit-upload", strconv.Itoa(limitUpload))
 	} else if limitUpload > 0 {
@@ -154,8 +155,8 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 	// host won't be disturbed).
 	slog.Debug("Removing stale locks if any", "repo", repoPath)
 	unlockArgs := []string{"-r", repoPath, "unlock"}
-	if len(snap.CacheDir) != 0 {
-		unlockArgs = append(unlockArgs, "--cache-dir", snap.CacheDir)
+	if cacheDir != "" {
+		unlockArgs = append(unlockArgs, "--cache-dir", cacheDir)
 	}
 	if err := shell.Run(shell.Command{
 		Binary: "restic",
@@ -166,10 +167,7 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 	}
 
 	// Apply retention policy
-	retention := snap.Retention
-	if retention == "" {
-		retention = r.Defaults.Retention
-	}
+	retention := snap.ResolvedRetention(r.Location, r.Defaults)
 	if retention == "" {
 		retention = "1m"
 	}
@@ -178,8 +176,8 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 	if r.Verbose {
 		forgetArgs = append(forgetArgs, "--verbose")
 	}
-	if len(snap.CacheDir) != 0 {
-		forgetArgs = append(forgetArgs, "--cache-dir", snap.CacheDir)
+	if cacheDir != "" {
+		forgetArgs = append(forgetArgs, "--cache-dir", cacheDir)
 	}
 	return shell.Run(shell.Command{
 		Binary: "restic",
@@ -193,9 +191,9 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 // `restic unlock --remove-all`, which also clears non-stale locks — use
 // only when you're sure no backup is in progress elsewhere.
 func (r *Runner) Unlock(snapshotName string, snap *config.Snapshot, removeAll bool) error {
-	repoPath := snap.ResolvedRepo(r.Defaults, r.UseLocal)
+	repoPath := snap.ResolvedRepo(r.Location)
 	if len(repoPath) == 0 {
-		return errors.New("snapshot repo is missing (set repoName or repo/localRepo)")
+		return errors.New("snapshot repo is missing (set repoName and location repoBase)")
 	}
 
 	if r.DryRun {
@@ -219,8 +217,9 @@ func (r *Runner) Unlock(snapshotName string, snap *config.Snapshot, removeAll bo
 	if removeAll {
 		args = append(args, "--remove-all")
 	}
-	if len(snap.CacheDir) != 0 {
-		args = append(args, "--cache-dir", snap.CacheDir)
+	cacheDir := snap.ResolvedCacheDir(r.Location)
+	if cacheDir != "" {
+		args = append(args, "--cache-dir", cacheDir)
 	}
 	slog.Info("Unlocking repository", "snapshot", snapshotName, "remove-all", removeAll)
 	return shell.Run(shell.Command{
@@ -232,9 +231,9 @@ func (r *Runner) Unlock(snapshotName string, snap *config.Snapshot, removeAll bo
 
 // ListSnapshots runs restic snapshots for a given snapshot config
 func (r *Runner) ListSnapshots(snapshotName string, snap *config.Snapshot) error {
-	repoPath := snap.ResolvedRepo(r.Defaults, r.UseLocal)
+	repoPath := snap.ResolvedRepo(r.Location)
 	if len(repoPath) == 0 {
-		return errors.New("snapshot repo is missing (set repoName or repo/localRepo)")
+		return errors.New("snapshot repo is missing (set repoName and location repoBase)")
 	}
 
 	if r.DryRun {

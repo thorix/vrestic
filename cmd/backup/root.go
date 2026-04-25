@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -25,7 +24,7 @@ var opts struct {
 	debug         bool
 	dryRun        bool
 	quiet         bool
-	useLocal      bool
+	location      string
 	listSnapshots bool
 	runAll        bool
 	generateName  bool
@@ -35,6 +34,7 @@ var opts struct {
 	newSnapshot   string
 	runSnapshot   string
 	configFile    string
+	initSnapshot  string
 }
 
 var rootCmd = &cobra.Command{
@@ -74,6 +74,12 @@ Repositories are automatically initialized on first backup.`,
 			return nil
 		}
 
+		// Resolve location
+		locName, loc, err := resolveLocation(cfg, opts.location)
+		if err != nil {
+			return err
+		}
+
 		// Initialize vault
 		var v vault.Vault
 		if err := v.New(); err != nil {
@@ -90,7 +96,12 @@ Repositories are automatically initialized on first backup.`,
 
 		// Create new snapshot
 		if opts.newSnapshot != "" {
-			return runNew(opts.newSnapshot, cfg, &v, opts.configFile)
+			return runNew(opts.newSnapshot, cfg, &v, opts.configFile, locName, loc)
+		}
+
+		// Initialize repo for existing snapshot on a location
+		if opts.initSnapshot != "" {
+			return runInit(opts.initSnapshot, cfg, &v, locName, loc)
 		}
 
 		var timeout time.Duration
@@ -99,12 +110,13 @@ Repositories are automatically initialized on first backup.`,
 		}
 
 		runner := &restic.Runner{
-			DryRun:   opts.dryRun,
-			Verbose:  !opts.quiet,
-			UseLocal: opts.useLocal,
-			Vault:    v,
-			Defaults: cfg.Defaults,
-			Timeout:  timeout,
+			DryRun:       opts.dryRun,
+			Verbose:      !opts.quiet,
+			Location:     loc,
+			LocationName: locName,
+			Vault:        v,
+			Defaults:     cfg.Defaults,
+			Timeout:      timeout,
 		}
 		if cfg.Defaults.MetricsURL != "" {
 			runner.Metrics = &metrics.Pusher{URL: cfg.Defaults.MetricsURL}
@@ -112,11 +124,17 @@ Repositories are automatically initialized on first backup.`,
 
 		if opts.unlock {
 			if opts.runSnapshot != "" {
-				snap, ok := cfg.Snapshots[opts.runSnapshot]
-				if !ok {
-					return fmt.Errorf("snapshot %q not found in config", opts.runSnapshot)
+				names := splitSnapshots(opts.runSnapshot)
+				for _, name := range names {
+					snap, ok := cfg.Snapshots[name]
+					if !ok {
+						return fmt.Errorf("snapshot %q not found in config", name)
+					}
+					if err := runner.Unlock(name, snap, opts.unlockRemove); err != nil {
+						return err
+					}
 				}
-				return runner.Unlock(opts.runSnapshot, snap, opts.unlockRemove)
+				return nil
 			}
 			if opts.runAll {
 				slog.Info("Unlocking all repositories")
@@ -136,11 +154,20 @@ Repositories are automatically initialized on first backup.`,
 		}
 
 		if opts.runSnapshot != "" {
-			snap, ok := cfg.Snapshots[opts.runSnapshot]
-			if !ok {
-				return fmt.Errorf("snapshot %q not found in config", opts.runSnapshot)
+			names := splitSnapshots(opts.runSnapshot)
+			// Validate all names exist first (fail-fast)
+			for _, name := range names {
+				if _, ok := cfg.Snapshots[name]; !ok {
+					return fmt.Errorf("snapshot %q not found in config", name)
+				}
 			}
-			return runner.RunTimed(opts.runSnapshot, snap)
+			for _, name := range names {
+				snap := cfg.Snapshots[name]
+				if err := runner.RunTimed(name, snap); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 
 		if opts.runAll {
@@ -165,16 +192,51 @@ func init() {
 	rootCmd.Flags().BoolVarP(&opts.debug, "debug", "d", false, "Debug output")
 	rootCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not exec commands")
 	rootCmd.Flags().BoolVarP(&opts.quiet, "quiet", "q", false, "Suppress progress output")
-	rootCmd.Flags().BoolVar(&opts.useLocal, "local", false, "Use local repo for restic")
+	rootCmd.Flags().StringVar(&opts.location, "location", "", "Backup location name (defaults to config's defaultLocation)")
 	rootCmd.Flags().BoolVarP(&opts.listSnapshots, "list", "l", false, "List all snapshots in the config")
 	rootCmd.Flags().BoolVar(&opts.runAll, "all", false, "Run all backups")
 	rootCmd.Flags().BoolVarP(&opts.generateName, "generate", "g", false, "Generate a random repo name")
-	rootCmd.Flags().StringVarP(&opts.runSnapshot, "backup", "b", "", "Run backup for given snapshot name")
+	rootCmd.Flags().StringVarP(&opts.runSnapshot, "backup", "b", "", "Run backup for given snapshot name (comma-separated for multiple)")
 	rootCmd.Flags().StringVar(&opts.configFile, "in", "config.yaml", "Configuration file")
 	rootCmd.Flags().BoolVar(&opts.unlock, "unlock", false, "Unlock repo(s) instead of running a backup (requires --backup or --all)")
 	rootCmd.Flags().BoolVar(&opts.unlockRemove, "unlock-remove-all", false, "When used with --unlock, remove ALL locks including active ones (dangerous)")
 	rootCmd.Flags().StringVar(&opts.newSnapshot, "new", "", "Create a new backup snapshot interactively")
+	rootCmd.Flags().StringVar(&opts.initSnapshot, "init", "", "Initialize restic repo for an existing snapshot on a location")
 	rootCmd.Flags().BoolVar(&opts.syncConfig, "sync-config", false, "Pull config from Vault and write to local config file")
+}
+
+// resolveLocation looks up the named location from config. If name is empty,
+// uses the config's defaultLocation.
+func resolveLocation(cfg *config.Config, name string) (string, *config.Location, error) {
+	if name == "" {
+		name = cfg.Defaults.DefaultLocation
+	}
+	if name == "" {
+		return "", nil, fmt.Errorf("no location specified and no defaultLocation in config")
+	}
+	loc, ok := cfg.Defaults.Locations[name]
+	if !ok {
+		available := make([]string, 0, len(cfg.Defaults.Locations))
+		for k := range cfg.Defaults.Locations {
+			available = append(available, k)
+		}
+		sort.Strings(available)
+		return "", nil, fmt.Errorf("location %q not found in config (available: %s)", name, strings.Join(available, ", "))
+	}
+	return name, loc, nil
+}
+
+// splitSnapshots splits a comma-separated snapshot list and trims whitespace.
+func splitSnapshots(input string) []string {
+	parts := strings.Split(input, ",")
+	names := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			names = append(names, p)
+		}
+	}
+	return names
 }
 
 func displayList(cfg *config.Config) {
@@ -184,11 +246,17 @@ func displayList(cfg *config.Config) {
 	}
 	sort.Strings(keys)
 
+	// Use default location for display
+	var loc *config.Location
+	if cfg.Defaults.DefaultLocation != "" {
+		loc = cfg.Defaults.Locations[cfg.Defaults.DefaultLocation]
+	}
+
 	w := tabwriter.NewWriter(os.Stdout, 10, 8, 2, ' ', 0)
-	fmt.Fprintln(w, "SNAPSHOT\tPATH\tREPO")
+	fmt.Fprintf(w, "SNAPSHOT\tPATH\tREPO (%s)\n", cfg.Defaults.DefaultLocation)
 	for _, name := range keys {
 		s := cfg.Snapshots[name]
-		repo := s.ResolvedRepo(cfg.Defaults, false)
+		repo := s.ResolvedRepo(loc)
 		fmt.Fprintf(w, "%s\t%s\t%s\n", name, strings.Join(s.Path, ", "), repo)
 	}
 	w.Flush()
@@ -208,8 +276,8 @@ func promptLine(reader *bufio.Reader, prompt string, defaultVal string) string {
 	return line
 }
 
-func runNew(name string, cfg *config.Config, v *vault.Vault, configFile string) error {
-	fmt.Printf("\nCreating new backup snapshot: %s\n\n", name)
+func runNew(name string, cfg *config.Config, v *vault.Vault, configFile string, locName string, loc *config.Location) error {
+	fmt.Printf("\nCreating new backup snapshot: %s (location: %s)\n\n", name, locName)
 
 	// Check if snapshot already exists in local config
 	if _, exists := cfg.Snapshots[name]; exists {
@@ -232,12 +300,6 @@ func runNew(name string, cfg *config.Config, v *vault.Vault, configFile string) 
 
 	reader := bufio.NewReader(os.Stdin)
 
-	// Use defaults from config
-	defaultRepoBase := cfg.Defaults.RepoBase
-	if defaultRepoBase == "" {
-		defaultRepoBase = "/mnt/backup/"
-	}
-	defaultLocalRepoBase := cfg.Defaults.LocalRepoBase
 	defaultRetention := cfg.Defaults.Retention
 	if defaultRetention == "" {
 		defaultRetention = "1m"
@@ -276,92 +338,40 @@ func runNew(name string, cfg *config.Config, v *vault.Vault, configFile string) 
 		return fmt.Errorf("generating repo name: %w", err)
 	}
 
-	// Prompt for repo base directory (remote/cron path — may not exist locally)
-	fmt.Println()
-	repoBase := promptLine(reader, "Repo base directory (cron/remote)", defaultRepoBase)
-	repoPath := filepath.Join(repoBase, repoName)
-	if info, err := os.Stat(repoBase); err != nil {
-		fmt.Printf("  ⚠ %s not accessible locally (OK if it's a remote mount)\n", repoBase)
+	repoPath := filepath.Join(loc.RepoBase, repoName)
+	if info, err := os.Stat(loc.RepoBase); err != nil {
+		fmt.Printf("  ⚠ %s not accessible locally (OK if it's a remote mount)\n", loc.RepoBase)
 	} else if !info.IsDir() {
-		return fmt.Errorf("repo base %q is not a directory", repoBase)
+		return fmt.Errorf("repo base %q is not a directory", loc.RepoBase)
 	} else {
-		// Check for collision only if path is accessible
 		if _, err := os.Stat(repoPath); err == nil {
 			return fmt.Errorf("repo path %q already exists (collision)", repoPath)
 		}
-		fmt.Printf("  ✓ %s accessible, no collision\n", repoBase)
+		fmt.Printf("  ✓ %s accessible, no collision\n", loc.RepoBase)
 	}
 	fmt.Printf("  Generated repo: %s\n", repoPath)
-
-	// Prompt for local repo base (for --local backups, must exist)
-	localRepoBase := promptLine(reader, "Local repo base directory (leave empty to use same)", defaultLocalRepoBase)
-	var localRepoPath string
-	if localRepoBase == "" {
-		localRepoPath = repoPath
-	} else {
-		info, err := os.Stat(localRepoBase)
-		if err != nil {
-			return fmt.Errorf("local repo base %q: %w", localRepoBase, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("local repo base %q is not a directory", localRepoBase)
-		}
-		localRepoPath = filepath.Join(localRepoBase, repoName)
-		if _, err := os.Stat(localRepoPath); err == nil {
-			return fmt.Errorf("local repo path %q already exists (collision)", localRepoPath)
-		}
-		fmt.Printf("  ✓ Local repo: %s\n", localRepoPath)
-	}
 
 	// Prompt for optional settings
 	fmt.Println()
 	retention := promptLine(reader, "Retention period", defaultRetention)
-	defaultLimit := "0"
-	if cfg.Defaults.LimitUpload > 0 {
-		defaultLimit = strconv.Itoa(cfg.Defaults.LimitUpload)
-	}
-	limitStr := promptLine(reader, "Upload limit (KiB/s, 0=unlimited)", defaultLimit)
-	limitUpload, _ := strconv.Atoi(limitStr)
 
-	// Build snapshot — use repoName when paths match defaults
+	// Build snapshot
 	snap := &config.Snapshot{
-		Path: config.StringList(paths),
-	}
-	expectedRepo := filepath.Join(defaultRepoBase, repoName)
-	expectedLocal := filepath.Join(defaultLocalRepoBase, repoName)
-	if defaultLocalRepoBase == "" {
-		expectedLocal = expectedRepo
-	}
-	if repoPath == expectedRepo && localRepoPath == expectedLocal {
-		// Both match defaults — just store the name
-		snap.RepoName = repoName
-	} else if repoPath == expectedRepo && localRepoPath != expectedLocal {
-		snap.RepoName = repoName
-		snap.LocalRepo = localRepoPath
-	} else {
-		snap.Repo = repoPath
-		snap.LocalRepo = localRepoPath
+		RepoName: repoName,
+		Path:     config.StringList(paths),
 	}
 	if retention != defaultRetention {
 		snap.Retention = retention
-	}
-	if limitUpload > 0 && limitUpload != cfg.Defaults.LimitUpload {
-		snap.LimitUpload = limitUpload
-	}
-	if cfg.Defaults.CacheDir != "" {
-		snap.CacheDir = cfg.Defaults.CacheDir
 	}
 
 	// Summary
 	fmt.Printf("\nSummary:\n")
 	fmt.Printf("  Snapshot:  %s\n", name)
+	fmt.Printf("  Location:  %s\n", locName)
 	fmt.Printf("  Path:      %s\n", strings.Join(paths, ", "))
 	fmt.Printf("  Repo:      %s\n", repoPath)
 	if snap.Retention != "" {
 		fmt.Printf("  Retention: %s\n", snap.Retention)
-	}
-	if snap.LimitUpload > 0 {
-		fmt.Printf("  Limit:     %d KiB/s\n", snap.LimitUpload)
 	}
 	fmt.Println()
 
@@ -385,24 +395,18 @@ func runNew(name string, cfg *config.Config, v *vault.Vault, configFile string) 
 	}
 	fmt.Println("done")
 
-	// Initialize the restic repo (local path if available, otherwise remote)
-	initRepo := localRepoPath
-	if localRepoPath == repoPath {
-		// No separate local path; only init if repo base is accessible
-		if _, err := os.Stat(repoBase); err != nil {
-			fmt.Printf("\nRepo base not accessible locally — skip init (run first backup on the target host)\n")
-			initRepo = ""
-		}
-	}
-	if initRepo != "" {
-		fmt.Printf("Initializing restic repo at %s... ", initRepo)
+	// Initialize the restic repo
+	if _, err := os.Stat(loc.RepoBase); err != nil {
+		fmt.Printf("\nRepo base not accessible locally — skip init (run --init on the target host)\n")
+	} else {
+		fmt.Printf("Initializing restic repo at %s... ", repoPath)
 		env := append(os.Environ(), "RESTIC_PASSWORD="+password)
-		if err := os.MkdirAll(initRepo, 0755); err != nil {
+		if err := os.MkdirAll(repoPath, 0755); err != nil {
 			return fmt.Errorf("creating repo directory: %w", err)
 		}
 		initErr := shell.Run(shell.Command{
 			Binary: "restic",
-			Args:   []string{"-r", initRepo, "init"},
+			Args:   []string{"-r", repoPath, "init"},
 			Envs:   env,
 		})
 		if initErr != nil {
@@ -423,7 +427,59 @@ func runNew(name string, cfg *config.Config, v *vault.Vault, configFile string) 
 	fmt.Println("done")
 
 	fmt.Printf("\nReady! Run your first backup with:\n")
-	fmt.Printf("  vrestic --backup %s --in %s\n", name, configFile)
+	fmt.Printf("  vrestic --backup %s\n", name)
+	return nil
+}
+
+func runInit(name string, cfg *config.Config, v *vault.Vault, locName string, loc *config.Location) error {
+	fmt.Printf("\nInitializing repo for snapshot %s on location %s\n\n", name, locName)
+
+	// Snapshot must already exist
+	snap, ok := cfg.Snapshots[name]
+	if !ok {
+		return fmt.Errorf("snapshot %q not found in config (use --new to create a new snapshot)", name)
+	}
+
+	if snap.RepoName == "" {
+		return fmt.Errorf("snapshot %q has no repoName", name)
+	}
+
+	repoPath := snap.ResolvedRepo(loc)
+	if repoPath == "" {
+		return fmt.Errorf("cannot resolve repo path for %q on location %q", name, locName)
+	}
+
+	// Check if repo already exists
+	if info, err := os.Stat(repoPath); err == nil && info.IsDir() {
+		return fmt.Errorf("repo path %q already exists", repoPath)
+	}
+
+	// Read existing password from Vault
+	fmt.Print("Reading password from Vault... ")
+	password, err := v.ReadPassword(name)
+	if err != nil {
+		return fmt.Errorf("reading password: %w (does the snapshot exist in Vault?)", err)
+	}
+	fmt.Println("done")
+
+	// Initialize
+	fmt.Printf("Initializing restic repo at %s... ", repoPath)
+	env := append(os.Environ(), "RESTIC_PASSWORD="+password)
+	if err := os.MkdirAll(repoPath, 0755); err != nil {
+		return fmt.Errorf("creating repo directory: %w", err)
+	}
+	initErr := shell.Run(shell.Command{
+		Binary: "restic",
+		Args:   []string{"-r", repoPath, "init"},
+		Envs:   env,
+	})
+	if initErr != nil {
+		return fmt.Errorf("restic init failed: %w", initErr)
+	}
+	fmt.Println("done")
+
+	fmt.Printf("\nReady! Run backup with:\n")
+	fmt.Printf("  vrestic --backup %s --location %s\n", name, locName)
 	return nil
 }
 
