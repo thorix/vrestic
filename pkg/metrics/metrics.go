@@ -18,6 +18,7 @@ type Pusher struct {
 // Result holds the outcome of a single backup run
 type Result struct {
 	Snapshot string
+	Location string
 	Success  bool
 	Duration time.Duration
 	Error    error
@@ -44,23 +45,23 @@ func (p *Pusher) Push(r Result) {
 
 	// Success gauge (1 = success, 0 = failure)
 	lines = append(lines,
-		fmt.Sprintf(`vrestic_backup_success{snapshot=%q,job=%q} %d %d`, r.Snapshot, job, successVal, now*1000),
+		fmt.Sprintf(`vrestic_backup_success{snapshot=%q,location=%q,job=%q} %d %d`, r.Snapshot, r.Location, job, successVal, now*1000),
 	)
 
 	// Duration in seconds
 	lines = append(lines,
-		fmt.Sprintf(`vrestic_backup_duration_seconds{snapshot=%q,job=%q} %.2f %d`, r.Snapshot, job, r.Duration.Seconds(), now*1000),
+		fmt.Sprintf(`vrestic_backup_duration_seconds{snapshot=%q,location=%q,job=%q} %.2f %d`, r.Snapshot, r.Location, job, r.Duration.Seconds(), now*1000),
 	)
 
 	// Last run timestamp
 	lines = append(lines,
-		fmt.Sprintf(`vrestic_backup_last_run_timestamp{snapshot=%q,job=%q} %d %d`, r.Snapshot, job, now, now*1000),
+		fmt.Sprintf(`vrestic_backup_last_run_timestamp{snapshot=%q,location=%q,job=%q} %d %d`, r.Snapshot, r.Location, job, now, now*1000),
 	)
 
 	// Last success timestamp (only on success)
 	if r.Success {
 		lines = append(lines,
-			fmt.Sprintf(`vrestic_backup_last_success_timestamp{snapshot=%q,job=%q} %d %d`, r.Snapshot, job, now, now*1000),
+			fmt.Sprintf(`vrestic_backup_last_success_timestamp{snapshot=%q,location=%q,job=%q} %d %d`, r.Snapshot, r.Location, job, now, now*1000),
 		)
 	}
 
