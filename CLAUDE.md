@@ -18,23 +18,34 @@ pkg/shell/shell.go    — Shell command execution wrapper
 
 ## Config Design
 
-The config uses a `defaults` block to avoid repetition:
+The config uses named locations for backup destinations and a `defaults` block to avoid repetition:
 
 ```yaml
 defaults:
-  repoBase: /mnt/backup/        # Remote/cron repo base
-  localRepoBase: /mnt/backup/   # Local repo base (--local flag)
+  defaultLocation: drobo
   retention: "6m"
-  limitUpload: 2048
+  metricsURL: http://vmagent:8429/api/v1/import/prometheus
+  timeout: "4h"
+  locations:
+    drobo:
+      repoBase: /mnt/backup/
+    dogutil:
+      repoBase: /mnt/dogutil/
+      limitUpload: 2048
 
 snapshots:
   d-immich:
-    repoName: FAC35D351AFBAE75  # Joined with repoBase/localRepoBase
+    repoName: FAC35D351AFBAE75
     path:
       - /mnt/oatmeal/immich/library
 ```
 
-Path resolution: `snap.ResolvedRepo(defaults, useLocal)` builds full path from `defaults.repoBase` + `repoName`. Explicit `repo`/`localRepo` fields override when needed.
+Path resolution: `snap.ResolvedRepo(location)` joins `location.RepoBase` + `repoName`.
+
+Setting resolution order: snapshot -> location -> global default.
+- `limitUpload`, `cacheDir`: snapshot -> location (no global default)
+- `retention`: snapshot -> location -> global default
+- `limitUpload` is automatically skipped for local filesystem repos
 
 ## Vault Layout
 
@@ -50,9 +61,11 @@ Passwords are consolidated in one secret (not per-snapshot secrets). WritePasswo
 
 - **Vault is authoritative**: `--new` refuses to overwrite existing Vault passwords
 - **CronJob is read-only**: No auto-create of passwords or repos in cron mode
-- **Local `--new` handles all creation**: Interactive prompts, restic init, Vault writes, config upload
+- **Local `--new` handles creation**: Interactive prompts, restic init, Vault writes, config upload
+- **`--init` for additional locations**: Inits an existing snapshot on a new location using the existing Vault password
+- **Named locations**: `--location <name>` selects backup destination; defaults to `defaults.defaultLocation`
 - **File-based fallback**: `RESTIC_SECRETS_DIR` env var skips Vault entirely (reads passwords from mounted files)
-- **Repo base validation**: Warns (doesn't error) when remote path isn't accessible locally
+- **Comma-separated backups**: `--backup a,b,c` runs multiple snapshots sequentially with fail-fast validation
 
 ## Building and Testing
 
@@ -65,10 +78,11 @@ export VAULT_ADDR=https://vault.thorix.io
 export VAULT_TOKEN=$(vault print token)
 go run ./ --list
 go run ./ --new d-something
-go run ./ --local --backup d-something
+go run ./ --backup d-something
 
 # Dry run (no restic execution)
 go run ./ --dry-run --backup d-immich
+go run ./ --dry-run --backup d-immich --location dogutil
 ```
 
 ## Docker Image
@@ -81,7 +95,18 @@ Built and pushed to `harbor.thorix.io/library/vrestic:<tag>`. The Kubernetes Cro
 ```bash
 go run ./ --new d-mybackup --in config.yaml
 # Follow prompts, then:
-go run ./ --local --backup d-mybackup --in config.yaml
+go run ./ --backup d-mybackup --in config.yaml
+```
+
+### Initializing a snapshot on another location
+```bash
+go run ./ --init d-mybackup --location dogutil --in config.yaml
+go run ./ --backup d-mybackup --location dogutil --in config.yaml
+```
+
+### Backing up multiple snapshots
+```bash
+go run ./ --backup d-movies,d-photos,d-music --location drobo
 ```
 
 ### Syncing config from Vault
@@ -91,7 +116,7 @@ go run ./ --sync-config --in config.yaml
 
 ### After code changes
 1. `go build ./...` to verify compilation
-2. Test locally with `--dry-run` or `--local`
+2. Test locally with `--dry-run`
 3. Build Docker image, push to harbor
 4. Update image tag in kubernetes-deploy/vrestic/values.yaml
 5. ArgoCD syncs the CronJob
@@ -100,7 +125,7 @@ go run ./ --sync-config --in config.yaml
 
 `pkg/metrics/metrics.go` pushes to a Prometheus pushgateway-compatible endpoint (VictoriaMetrics) after each backup. No external dependencies — uses raw HTTP POST with Prometheus text format.
 
-Metrics pushed per snapshot:
+Metrics pushed per snapshot (labels: `snapshot`, `location`, `job`):
 - `vrestic_backup_success` — 1/0 gauge
 - `vrestic_backup_duration_seconds` — wall-clock time
 - `vrestic_backup_last_run_timestamp` — when it ran
@@ -126,7 +151,7 @@ Alert rules live in vmalert. Key alerts:
 ## Conventions
 
 - No auto-initialization of repos in the backup path — error with "use --new"
-- Retention and limitUpload default from config, override per-snapshot
+- Settings resolve: snapshot -> location -> global default (retention only has global)
 - `limitUpload` is skipped automatically for local filesystem repos
 - After backup, stale locks are cleared and retention policy is applied (forget + prune)
 - `RunTimed()` is the entry point for backups — wraps `Run()` with timing, metrics, and timeout

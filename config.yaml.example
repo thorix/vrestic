@@ -1,28 +1,41 @@
 # vrestic configuration example
-# Passwords are stored in Vault at kv/rbackup/<snapshot-name>
-# Repositories are auto-initialized on first backup
+# Passwords are stored in Vault at kv/vrestic/passwords/<snapshot-name>
+
+defaults:
+  # Which location to use when --location is not specified
+  defaultLocation: local
+
+  # Global retention default (restic duration format: 1y2m3d)
+  retention: "6m"
+
+  # Prometheus push endpoint for backup metrics (empty = disabled)
+  metricsURL: http://vmagent:8429/api/v1/import/prometheus
+
+  # Per-snapshot timeout (Go duration format)
+  timeout: "4h"
+
+  # Named backup destinations
+  locations:
+    local:
+      repoBase: /mnt/backup/
+    remote:
+      repoBase: sftp:backuphost:/mnt/backups/
+      limitUpload: 2048          # KiB/s, only applied to remote repos
+      cacheDir: /tmp/restic-cache
+      retention: "3m"            # Override global retention for this location
 
 snapshots:
   documents:
-    repo: s3:https://minio.example.com/backups/documents
+    repoName: A1B2C3D4E5F67890
     path: /data/documents
     exclude: "*.tmp"
-    cacheDir: /tmp/restic-cache
-    # retention: how long to keep snapshots (default: 1m)
-    # Uses restic duration format: 1y2m3d (years, months, days)
-    retention: "1m"
-    # limitUpload: max upload speed in KiB/s (0 = unlimited)
-    limitUpload: 5120  # 5 MiB/s
 
   photos:
-    repo: /mnt/backup-drive/photos
+    repoName: 1234567890ABCDEF
     path: /data/photos
-    retention: "6m"
-    limitUpload: 2048  # 2 MiB/s
+    retention: "1y"              # Override retention for this snapshot
 
-  # Use localRepo for local-only backups (with --local flag)
   database:
-    repo: s3:https://minio.example.com/backups/database
-    localRepo: /mnt/local-backup/database
+    repoName: FEDCBA0987654321
     path: /data/database
     retention: "3m"
