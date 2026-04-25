@@ -168,7 +168,15 @@ Repositories are automatically initialized on first backup.`,
 		}
 
 		if opts.runSnapshot != "" {
-			names := splitSnapshots(opts.runSnapshot)
+			var names []string
+			if opts.runSnapshot == "all" {
+				for name := range cfg.Snapshots {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+			} else {
+				names = splitSnapshots(opts.runSnapshot)
+			}
 			// Validate all names exist first (fail-fast)
 			for _, name := range names {
 				if _, ok := cfg.Snapshots[name]; !ok {
