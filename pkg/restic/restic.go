@@ -230,6 +230,98 @@ func (r *Runner) Unlock(snapshotName string, snap *config.Snapshot, removeAll bo
 	})
 }
 
+// Status queries the state of a snapshot's repo on the current location.
+func (r *Runner) Status(snapshotName string, snap *config.Snapshot) StatusResult {
+	result := StatusResult{
+		Snapshot:  snapshotName,
+		Location:  r.LocationName,
+		TotalSize: -1,
+	}
+
+	// Check source paths
+	result.Source = checkSource(snap.Path)
+
+	// Resolve repo path
+	repoPath := snap.ResolvedRepo(r.Location)
+	if repoPath == "" {
+		result.RepoState = "not initialized"
+		return result
+	}
+
+	// Check if location base is accessible (for local paths)
+	if r.Location != nil && !isRemoteRepo(r.Location.RepoBase) {
+		if _, err := os.Stat(r.Location.RepoBase); err != nil {
+			result.RepoState = "unreachable"
+			return result
+		}
+	}
+
+	// Get password
+	password, err := r.getPassword(snapshotName)
+	if err != nil {
+		slog.Warn("Cannot read password", "snapshot", snapshotName, "error", err)
+		result.RepoState = "unreachable"
+		return result
+	}
+
+	env := os.Environ()
+	env = append(env, "RESTIC_PASSWORD="+password)
+
+	cacheDir := snap.ResolvedCacheDir(r.Location)
+
+	// Run restic snapshots --json
+	snapArgs := []string{"-r", repoPath, "snapshots", "--json"}
+	if cacheDir != "" {
+		snapArgs = append(snapArgs, "--cache-dir", cacheDir)
+	}
+	out, err := shell.RunCapture(shell.Command{
+		Binary: "restic",
+		Args:   snapArgs,
+		Envs:   env,
+	})
+	if err != nil {
+		slog.Debug("restic snapshots failed", "snapshot", snapshotName, "error", err)
+		result.RepoState = "not initialized"
+		return result
+	}
+
+	count, latest, err := parseSnapshotsJSON(out)
+	if err != nil {
+		slog.Warn("Failed to parse snapshots JSON", "snapshot", snapshotName, "error", err)
+		result.RepoState = "unreachable"
+		return result
+	}
+
+	result.RepoState = "ok"
+	result.SnapshotCount = count
+	result.LastBackup = latest
+
+	// If verbose, get repo size
+	if r.Verbose {
+		statsArgs := []string{"-r", repoPath, "stats", "--json"}
+		if cacheDir != "" {
+			statsArgs = append(statsArgs, "--cache-dir", cacheDir)
+		}
+		out, err := shell.RunCapture(shell.Command{
+			Binary: "restic",
+			Args:   statsArgs,
+			Envs:   env,
+		})
+		if err != nil {
+			slog.Warn("restic stats failed", "snapshot", snapshotName, "error", err)
+		} else {
+			size, err := parseStatsJSON(out)
+			if err != nil {
+				slog.Warn("Failed to parse stats JSON", "snapshot", snapshotName, "error", err)
+			} else {
+				result.TotalSize = size
+			}
+		}
+	}
+
+	return result
+}
+
 // ListSnapshots runs restic snapshots for a given snapshot config
 func (r *Runner) ListSnapshots(snapshotName string, snap *config.Snapshot) error {
 	repoPath := snap.ResolvedRepo(r.Location)
