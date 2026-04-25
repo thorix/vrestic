@@ -16,49 +16,37 @@ type Config struct {
 
 // Defaults holds default values used by --new and backup operations
 type Defaults struct {
-	RepoBase      string `yaml:"repoBase,omitempty"`
-	LocalRepoBase string `yaml:"localRepoBase,omitempty"`
-	Retention     string `yaml:"retention,omitempty"`
-	LimitUpload   int    `yaml:"limitUpload,omitempty"`
-	CacheDir      string `yaml:"cacheDir,omitempty"`
-	MetricsURL    string `yaml:"metricsURL,omitempty"`
-	Timeout       string `yaml:"timeout,omitempty"`
+	DefaultLocation string               `yaml:"defaultLocation,omitempty"`
+	Retention       string               `yaml:"retention,omitempty"`
+	MetricsURL      string               `yaml:"metricsURL,omitempty"`
+	Timeout         string               `yaml:"timeout,omitempty"`
+	Locations       map[string]*Location `yaml:"locations,omitempty"`
+}
+
+// Location defines a backup destination and its settings
+type Location struct {
+	RepoBase    string `yaml:"repoBase"`
+	LimitUpload int    `yaml:"limitUpload,omitempty"`
+	CacheDir    string `yaml:"cacheDir,omitempty"`
+	Retention   string `yaml:"retention,omitempty"`
 }
 
 // Snapshot defines a single backup target
 type Snapshot struct {
 	RepoName    string     `yaml:"repoName,omitempty"`
-	Repo        string     `yaml:"repo,omitempty"`
 	Path        StringList `yaml:"path,omitempty"`
 	Exclude     string     `yaml:"exclude,omitempty"`
-	CacheDir    string     `yaml:"cacheDir,omitempty"`
-	LocalRepo   string     `yaml:"localRepo,omitempty"`
 	Retention   string     `yaml:"retention,omitempty"`
 	LimitUpload int        `yaml:"limitUpload,omitempty"`
+	CacheDir    string     `yaml:"cacheDir,omitempty"`
 }
 
-// ResolvedRepo returns the full repo path, using defaults if repoName is set
-func (s *Snapshot) ResolvedRepo(defaults Defaults, useLocal bool) string {
-	if useLocal && s.LocalRepo != "" {
-		return s.LocalRepo
+// ResolvedRepo returns the full repo path for the given location
+func (s *Snapshot) ResolvedRepo(loc *Location) string {
+	if s.RepoName != "" && loc != nil && loc.RepoBase != "" {
+		return filepath.Join(loc.RepoBase, s.RepoName)
 	}
-	if !useLocal && s.Repo != "" {
-		return s.Repo
-	}
-	if s.RepoName != "" {
-		base := defaults.RepoBase
-		if useLocal && defaults.LocalRepoBase != "" {
-			base = defaults.LocalRepoBase
-		}
-		if base != "" {
-			return filepath.Join(base, s.RepoName)
-		}
-	}
-	// Fall back to explicit fields
-	if useLocal {
-		return s.LocalRepo
-	}
-	return s.Repo
+	return ""
 }
 
 // StringList is a []string that unmarshals from either a single string or a list
