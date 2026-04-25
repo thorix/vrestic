@@ -99,9 +99,23 @@ Repositories are automatically initialized on first backup.`,
 			return runNew(opts.newSnapshot, cfg, &v, opts.configFile, locName, loc)
 		}
 
-		// Initialize repo for existing snapshot on a location
+		// Initialize repo for existing snapshot(s) on a location
 		if opts.initSnapshot != "" {
-			return runInit(opts.initSnapshot, cfg, &v, locName, loc)
+			var names []string
+			if opts.initSnapshot == "all" {
+				for name := range cfg.Snapshots {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+			} else {
+				names = splitSnapshots(opts.initSnapshot)
+			}
+			for _, name := range names {
+				if err := runInit(name, cfg, &v, locName, loc); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 
 		var timeout time.Duration
