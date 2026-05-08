@@ -9,6 +9,15 @@ import (
 	"syscall"
 )
 
+// ExitError is returned when a command exits with a non-zero status.
+type ExitError struct {
+	Code int
+}
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("shell command exit with code %d", e.Code)
+}
+
 // Command defines shell command parameters
 type Command struct {
 	Binary  string
@@ -46,7 +55,7 @@ func Run(c Command) error {
 		}
 		if exiterr, ok := err.(*exec.ExitError); ok {
 			if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
-				return fmt.Errorf("shell command exit with code %d", status.ExitStatus())
+				return &ExitError{Code: status.ExitStatus()}
 			}
 		}
 		return err
@@ -83,7 +92,7 @@ func RunCapture(c Command) ([]byte, error) {
 		}
 		if exiterr, ok := err.(*exec.ExitError); ok {
 			if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
-				return nil, fmt.Errorf("shell command exit with code %d", status.ExitStatus())
+				return nil, &ExitError{Code: status.ExitStatus()}
 			}
 		}
 		return nil, err

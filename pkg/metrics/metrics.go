@@ -72,7 +72,8 @@ func (p *Pusher) Push(r Result) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Post(p.URL, "text/plain", strings.NewReader(body))
 	if err != nil {
-		slog.Warn("Failed to push metrics", "snapshot", r.Snapshot, "error", err)
+		slog.Warn("Failed to push metrics (endpoint unreachable)", "snapshot", r.Snapshot)
+		slog.Debug("Metrics push error detail", "url", p.URL, "error", err)
 		return
 	}
 	defer resp.Body.Close()

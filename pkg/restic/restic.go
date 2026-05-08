@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -133,6 +132,7 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		Binary: "restic",
 		Args:   []string{"-r", repoPath, "snapshots"},
 		Envs:   env,
+		Ctx:    r.ctx,
 	})
 	if err != nil {
 		return fmt.Errorf("repo %s does not exist or is inaccessible (use --new to create new snapshots): %w", repoPath, err)
@@ -147,7 +147,15 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		Ctx:    r.ctx,
 	})
 	if err != nil {
-		return err
+		// Exit code 3 = "incomplete": snapshot saved but some source files
+		// could not be read (permission errors, files vanished mid-scan, etc.).
+		// Treat as warning — the backup still succeeded.
+		var exitErr *shell.ExitError
+		if errors.As(err, &exitErr) && exitErr.Code == 3 {
+			slog.Warn("Backup completed with warnings (some files could not be read)", "snapshot", snapshotName)
+		} else {
+			return err
+		}
 	}
 
 	// Clear any stale locks left behind by prior OOMKilled / interrupted runs
@@ -163,6 +171,7 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		Binary: "restic",
 		Args:   unlockArgs,
 		Envs:   env,
+		Ctx:    r.ctx,
 	}); err != nil {
 		slog.Warn("restic unlock failed (continuing)", "snapshot", snapshotName, "error", err)
 	}
@@ -359,15 +368,18 @@ func (r *Runner) getPassword(name string) (string, error) {
 }
 
 // CreatePassword generates a random password of 60-70 characters
+// using crypto/rand for cryptographic security.
 func CreatePassword() string {
-	length := 60 + rand.Intn(10)
-	var password []string
-	startChar := byte('!')
-	for i := 0; i < length; i++ {
-		newChar := string(startChar + byte(rand.Intn(94)))
-		password = append(password, newChar)
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?"
+	b := make([]byte, 65)
+	if _, err := crypto.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
 	}
-	return strings.Join(password, "")
+	password := make([]byte, len(b))
+	for i, v := range b {
+		password[i] = charset[int(v)%len(charset)]
+	}
+	return string(password)
 }
 
 // PseudoName generates a random hex name for repo directories
