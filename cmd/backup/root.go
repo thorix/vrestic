@@ -25,6 +25,7 @@ var opts struct {
 	dryRun         bool
 	quiet          bool
 	location       string
+	repoBase       string
 	listSnapshots  bool
 	runAll         bool
 	generateName   bool
@@ -36,6 +37,7 @@ var opts struct {
 	configFile     string
 	initSnapshot   string
 	statusSnapshot string
+	timeout        string
 }
 
 var rootCmd = &cobra.Command{
@@ -44,6 +46,7 @@ var rootCmd = &cobra.Command{
 	Long: `vrestic manages restic backups using a YAML configuration file.
 Passwords are stored in and retrieved from HashiCorp Vault.
 Repositories are automatically initialized on first backup.`,
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if opts.debug {
 			slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -80,6 +83,9 @@ Repositories are automatically initialized on first backup.`,
 			locName, loc, err := resolveLocation(cfg, opts.location)
 			if err != nil {
 				return err
+			}
+			if opts.repoBase != "" {
+				loc.RepoBase = opts.repoBase
 			}
 
 			var v vault.Vault
@@ -129,6 +135,9 @@ Repositories are automatically initialized on first backup.`,
 		if err != nil {
 			return err
 		}
+		if opts.repoBase != "" {
+			loc.RepoBase = opts.repoBase
+		}
 
 		// Initialize vault
 		var v vault.Vault
@@ -169,8 +178,16 @@ Repositories are automatically initialized on first backup.`,
 		}
 
 		var timeout time.Duration
-		if cfg.Defaults.Timeout != "" {
-			timeout, _ = time.ParseDuration(cfg.Defaults.Timeout)
+		timeoutStr := cfg.Defaults.Timeout
+		if opts.timeout != "" {
+			timeoutStr = opts.timeout
+		}
+		if timeoutStr != "" {
+			var err error
+			timeout, err = time.ParseDuration(timeoutStr)
+			if err != nil {
+				return fmt.Errorf("invalid timeout %q: %w", timeoutStr, err)
+			}
 		}
 
 		runner := &restic.Runner{
@@ -233,11 +250,15 @@ Repositories are automatically initialized on first backup.`,
 					return fmt.Errorf("snapshot %q not found in config", name)
 				}
 			}
+			var errs []error
 			for _, name := range names {
 				snap := cfg.Snapshots[name]
 				if err := runner.RunTimed(name, snap); err != nil {
-					return err
+					errs = append(errs, fmt.Errorf("%s: %w", name, err))
 				}
+			}
+			if len(errs) > 0 {
+				return fmt.Errorf("%d backup(s) failed", len(errs))
 			}
 			return nil
 		}
@@ -265,6 +286,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not exec commands")
 	rootCmd.Flags().BoolVarP(&opts.quiet, "quiet", "q", false, "Suppress progress output")
 	rootCmd.Flags().StringVar(&opts.location, "location", "", "Backup location name (defaults to config's defaultLocation)")
+	rootCmd.Flags().StringVar(&opts.repoBase, "repo-base", "", "Override location's repo base path (e.g. /mnt/drobo/ for local use)")
 	rootCmd.Flags().BoolVarP(&opts.listSnapshots, "list", "l", false, "List all snapshots in the config")
 	rootCmd.Flags().BoolVar(&opts.runAll, "all", false, "Run all backups")
 	rootCmd.Flags().BoolVarP(&opts.generateName, "generate", "g", false, "Generate a random repo name")
@@ -275,6 +297,7 @@ func init() {
 	rootCmd.Flags().StringVar(&opts.newSnapshot, "new", "", "Create a new backup snapshot interactively")
 	rootCmd.Flags().StringVar(&opts.initSnapshot, "init", "", "Initialize restic repo for an existing snapshot on a location")
 	rootCmd.Flags().StringVar(&opts.statusSnapshot, "status", "", "Show backup status for snapshot(s) (name, comma-list, or \"all\")")
+	rootCmd.Flags().StringVar(&opts.timeout, "timeout", "", "Override backup timeout (e.g. \"12h\", \"30m\")")
 	rootCmd.Flags().BoolVar(&opts.syncConfig, "sync-config", false, "Pull config from Vault and write to local config file")
 }
 
