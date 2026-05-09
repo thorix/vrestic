@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,10 @@ func (r *Runner) RunTimed(snapshotName string, snap *config.Snapshot) error {
 
 // Run performs a full backup for the named snapshot
 func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
+	if _, err := exec.LookPath("restic"); err != nil {
+		return errors.New("restic not found in PATH — install it first (https://restic.net)")
+	}
+
 	if len(snap.Path) == 0 {
 		return errors.New("snapshot path is missing")
 	}
