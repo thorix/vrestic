@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /vrestic .
 RUN CGO_ENABLED=0 go install github.com/restic/restic/cmd/restic@latest
 
 FROM ${CACHE_REGISTRY}alpine:3.21
-RUN apk --no-cache add ca-certificates openssh-client
+RUN apk --no-cache add ca-certificates openssh-client rclone
 COPY --from=builder /vrestic /vrestic
 COPY --from=builder /go/bin/restic /usr/bin/restic
 USER 65534:65534
