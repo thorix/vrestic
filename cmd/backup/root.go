@@ -182,7 +182,7 @@ Repositories are automatically initialized on first backup.`,
 		if opts.timeout != "" {
 			timeoutStr = opts.timeout
 		}
-		if timeoutStr != "" {
+		if timeoutStr != "" && timeoutStr != "0" {
 			var err error
 			timeout, err = time.ParseDuration(timeoutStr)
 			if err != nil {
@@ -297,7 +297,7 @@ func init() {
 	rootCmd.Flags().StringVar(&opts.newSnapshot, "new", "", "Create a new backup snapshot interactively")
 	rootCmd.Flags().StringVar(&opts.initSnapshot, "init", "", "Initialize restic repo for an existing snapshot on a location")
 	rootCmd.Flags().StringVar(&opts.statusSnapshot, "status", "", "Show backup status for snapshot(s) (name, comma-list, or \"all\")")
-	rootCmd.Flags().StringVar(&opts.timeout, "timeout", "", "Override backup timeout (e.g. \"12h\", \"30m\")")
+	rootCmd.Flags().StringVar(&opts.timeout, "timeout", "", "Override backup timeout (e.g. \"12h\", \"30m\"); use \"0\" to disable")
 	rootCmd.Flags().BoolVar(&opts.syncConfig, "sync-config", false, "Pull config from Vault and write to local config file")
 }
 
