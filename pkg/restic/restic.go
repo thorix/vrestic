@@ -29,6 +29,7 @@ type Runner struct {
 	Defaults     config.Defaults
 	Metrics      *metrics.Pusher
 	Timeout      time.Duration
+	Hostname     string // passed as --host to restic; enables stable parent snapshot lookup across pod restarts
 	ctx          context.Context // set by RunTimed when timeout is configured
 }
 
@@ -100,6 +101,9 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		args = append(args, "--limit-upload", strconv.Itoa(limitUpload))
 	} else if limitUpload > 0 {
 		slog.Info("Skipping limitUpload for local repo", "snapshot", snapshotName, "repo", repoPath)
+	}
+	if r.Hostname != "" {
+		args = append(args, "--host", r.Hostname)
 	}
 
 	slog.Info("Running backup", "snapshot", snapshotName)

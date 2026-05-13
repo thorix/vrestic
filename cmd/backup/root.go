@@ -38,6 +38,7 @@ var opts struct {
 	initSnapshot   string
 	statusSnapshot string
 	timeout        string
+	hostname       string
 }
 
 var rootCmd = &cobra.Command{
@@ -198,6 +199,7 @@ Repositories are automatically initialized on first backup.`,
 			Vault:        v,
 			Defaults:     cfg.Defaults,
 			Timeout:      timeout,
+			Hostname:     opts.hostname,
 		}
 		if cfg.Defaults.MetricsURL != "" {
 			runner.Metrics = &metrics.Pusher{URL: cfg.Defaults.MetricsURL}
@@ -298,6 +300,7 @@ func init() {
 	rootCmd.Flags().StringVar(&opts.initSnapshot, "init", "", "Initialize restic repo for an existing snapshot on a location")
 	rootCmd.Flags().StringVar(&opts.statusSnapshot, "status", "", "Show backup status for snapshot(s) (name, comma-list, or \"all\")")
 	rootCmd.Flags().StringVar(&opts.timeout, "timeout", "", "Override backup timeout (e.g. \"12h\", \"30m\"); use \"0\" to disable")
+	rootCmd.Flags().StringVar(&opts.hostname, "hostname", "", "Stable hostname passed to restic --host (enables parent snapshot lookup across pod restarts)")
 	rootCmd.Flags().BoolVar(&opts.syncConfig, "sync-config", false, "Pull config from Vault and write to local config file")
 }
 
