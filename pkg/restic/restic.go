@@ -126,10 +126,10 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 
 	passwordValue, err := r.getPassword(snapshotName)
 	if err != nil {
-		return fmt.Errorf("reading password for %s: %w (use --new to create new snapshots)", snapshotName, err)
+		return fmt.Errorf("reading password for %s: %w (use --new to create a new snapshot or --init to initialize an existing snapshot on a new location)", snapshotName, err)
 	}
 	if len(passwordValue) == 0 {
-		return fmt.Errorf("password is empty for %s (use --new to create new snapshots)", snapshotName)
+		return fmt.Errorf("password is empty for %s (use --new to create a new snapshot or --init to initialize an existing snapshot on a new location)", snapshotName)
 	}
 
 	env := os.Environ()
@@ -144,7 +144,7 @@ func (r *Runner) Run(snapshotName string, snap *config.Snapshot) error {
 		Ctx:    r.ctx,
 	})
 	if err != nil {
-		return fmt.Errorf("repo %s does not exist or is inaccessible (use --new to create new snapshots): %w", repoPath, err)
+		return fmt.Errorf("repo %s does not exist or is inaccessible (use --new to create a new snapshot or --init to initialize an existing snapshot on a new location): %w", repoPath, err)
 	}
 
 	// Run the backup
