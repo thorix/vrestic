@@ -36,6 +36,10 @@ vrestic --unlock --all
 # Pull config from Vault to local file
 vrestic --sync-config --in config.yaml
 
+# ...and to push a local config BACK to Vault, use the vault CLI directly.
+# vrestic has no push mode -- --sync-config only pulls.
+#   vault kv put kv/vrestic/config config.yaml=@config.yaml
+
 # Generate a random repo name
 vrestic --generate
 
@@ -110,6 +114,46 @@ Config is stored in Vault at `kv/vrestic/config` and synced as a Kubernetes secr
 kv/vrestic/passwords   — consolidated secret with snapshot names as keys
 kv/vrestic/config      — full config.yaml stored under "config.yaml" key
 kv/vrestic/ssh         — SSH key for SFTP backends
+```
+
+### Editing the config
+
+Vault is the source of truth for `config.yaml`; the copy inside the CronJob pods
+is a read-only projection of it, synced by the Vault Secrets Operator. Editing
+the in-cluster secret directly is pointless — VSO will overwrite it.
+
+`--sync-config` only pulls. There is no push mode, so writing a change back is a
+plain `vault kv put`:
+
+```bash
+export VAULT_TOKEN=$(cat ~/.vault-token)
+
+# 1. pull the current config (also serves as your backup)
+vault kv get -field=config.yaml kv/vrestic/config > config.yaml
+
+# 2. edit it, then check it still parses before writing
+python3 -c "import yaml;yaml.safe_load(open('config.yaml'))"
+
+# 3. push it back — this creates a new KV version
+vault kv put kv/vrestic/config config.yaml=@config.yaml
+```
+
+The `@` prefix means "read from this file". Without it the literal string is
+stored and every snapshot definition is lost, so it is worth double-checking.
+
+KV v2 keeps version history, so a bad write is recoverable:
+
+```bash
+vault kv get -version=11 kv/vrestic/config       # inspect an old version
+vault kv rollback -version=11 kv/vrestic/config  # restore it
+```
+
+Pods pick the change up on the VaultStaticSecret `refreshAfter` interval (30m).
+To apply it immediately, restart VSO:
+
+```bash
+kubectl -n vault-secrets-operator-system rollout restart \
+  deploy/vault-secrets-operator-controller-manager
 ```
 
 ### Auth Modes
